@@ -1,9 +1,12 @@
 import argparse
 import inspect
 
+import state
+from sympy import use
+
 from . import diffusion
 from .respace import SpacedDiffusion, space_timesteps
-from .MLPModel import MLPModel, EncoderMLPModel
+from .MLPModel import MLPModel, EncoderMLPModel, our_MLPModel, Our_MLPModel_FiLM
 
 NUM_CLASSES = 4
 
@@ -22,6 +25,7 @@ def diffusion_defaults():
         rescale_timesteps=False,
         rescale_learned_sigmas=False,
     )
+
 
 
 def classifier_defaults():
@@ -61,6 +65,25 @@ def model_and_diffusion_defaults():
     res.update(diffusion_defaults())
     return res
 
+def our_model_and_diffusion_defaults():
+    """
+    Defaults for training.
+    """
+    res = dict(
+        output_dim=1000,
+        num_layers=3,
+        num_channels=128,
+        dropout=0.0,
+        class_cond=False,
+        use_checkpoint=False,
+        use_scale_shift_norm=True,
+        use_fp16=False,
+        use_encoder=False,
+        state_dataset_config=None
+    )
+    res.update(diffusion_defaults())
+    return res
+
 
 def classifier_and_diffusion_defaults():
     res = classifier_defaults()
@@ -89,7 +112,7 @@ def create_model_and_diffusion(
     use_encoder,
     use_drug_structure,
     drug_dimension,
-    comb_num,
+    comb_num
 ):
     model = create_model(
         gene_size,
@@ -104,7 +127,95 @@ def create_model_and_diffusion(
         use_encoder=use_encoder,
         use_drug_structure = use_drug_structure,
         drug_dimension = drug_dimension,
-        comb_num=comb_num,
+        comb_num=comb_num
+    )
+    diffusion = create_gaussian_diffusion(
+        steps=diffusion_steps,
+        learn_sigma=learn_sigma,
+        noise_schedule=noise_schedule,
+        use_kl=use_kl,
+        predict_xstart=predict_xstart,
+        rescale_timesteps=rescale_timesteps,
+        rescale_learned_sigmas=rescale_learned_sigmas,
+        timestep_respacing=timestep_respacing,
+        use_encoder=use_encoder
+    )
+    return model, diffusion
+    
+def create_our_model_and_diffusion(
+    num_layers,
+    output_dim,
+    class_cond,
+    learn_sigma,
+    num_channels,
+    dropout,
+    diffusion_steps,
+    noise_schedule,
+    timestep_respacing,
+    use_kl,
+    predict_xstart,
+    rescale_timesteps,
+    rescale_learned_sigmas,
+    use_checkpoint,
+    use_scale_shift_norm,
+    use_encoder,
+    use_fp16,
+    state_dataset_config,
+):
+    model = create_our_model(
+        state_dataset_config['gene_size'],
+        num_layers,
+        output_dim=state_dataset_config['output_dim'],
+        use_checkpoint=use_checkpoint,
+        use_scale_shift_norm=use_scale_shift_norm,
+        dropout=dropout,
+        use_fp16=use_fp16,
+        use_encoder=use_encoder,
+        state_dataset_config = state_dataset_config
+    )
+    diffusion = create_gaussian_diffusion(
+        steps=diffusion_steps,
+        learn_sigma=learn_sigma,
+        noise_schedule=noise_schedule,
+        use_kl=use_kl,
+        predict_xstart=predict_xstart,
+        rescale_timesteps=rescale_timesteps,
+        rescale_learned_sigmas=rescale_learned_sigmas,
+        timestep_respacing=timestep_respacing,
+        use_encoder=use_encoder
+    )
+    return model, diffusion
+
+def create_our_film_model_and_diffusion(
+    num_layers,
+    output_dim,
+    class_cond,
+    learn_sigma,
+    num_channels,
+    dropout,
+    diffusion_steps,
+    noise_schedule,
+    timestep_respacing,
+    use_kl,
+    predict_xstart,
+    rescale_timesteps,
+    rescale_learned_sigmas,
+    use_checkpoint,
+    use_scale_shift_norm,
+    use_encoder,
+    use_fp16,
+    state_dataset_config,
+):
+    model = create_our_film_model(
+        state_dataset_config['gene_size'],
+        num_layers,
+        output_dim=state_dataset_config['output_dim'],
+        use_checkpoint=use_checkpoint,
+        use_scale_shift_norm=use_scale_shift_norm,
+        dropout=dropout,
+        use_fp16=use_fp16,
+        use_encoder=use_encoder,
+        state_dataset_config = state_dataset_config
     )
     diffusion = create_gaussian_diffusion(
         steps=diffusion_steps,
@@ -133,9 +244,8 @@ def create_model(
     use_encoder=False,
     use_drug_structure = False,
     drug_dimension = 1024,
-    comb_num=1,
+    comb_num=1
 ):
-
     return MLPModel(
         gene_size  = gene_size,
         output_dim = output_dim,
@@ -151,6 +261,49 @@ def create_model(
         comb_num=comb_num,
     )
 
+def create_our_model(
+    gene_size,
+    num_layers,
+    output_dim,
+    use_checkpoint=False,
+    use_scale_shift_norm=False,
+    dropout=0,
+    use_fp16=False,
+    use_encoder=True,
+    state_dataset_config = None
+):
+    return our_MLPModel(
+        gene_size  = gene_size,
+        output_dim = output_dim,
+        num_layers = num_layers,
+        dropout=dropout,
+        use_checkpoint=use_checkpoint,
+        use_fp16=use_fp16,
+        use_scale_shift_norm=use_scale_shift_norm,
+        state_dataset_config = state_dataset_config,
+        use_encoder = use_encoder
+    )
+
+def create_our_film_model(
+    gene_size,
+    num_layers,
+    output_dim,
+    use_checkpoint=False,
+    use_scale_shift_norm=False,
+    dropout=0,
+    use_fp16=False,
+    use_encoder=True,
+    state_dataset_config = None
+):
+    return Our_MLPModel_FiLM(
+        gene_size  = gene_size,
+        output_dim = output_dim,
+        num_layers = num_layers,
+        dropout=dropout,
+        use_fp16=use_fp16,
+        state_dataset_config = state_dataset_config,
+        use_encoder = use_encoder
+    )
 
 def create_classifier_and_diffusion(
     gene_size,

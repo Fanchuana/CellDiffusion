@@ -6,28 +6,54 @@
 
 import argparse
 import os
+from pyexpat import model
 import numpy as np
 import torch.distributed as dist
 import torch
+from transformers import model_addition_debugger_context
 from Squidiff import dist_util, logger
 from Squidiff.script_util import (
     NUM_CLASSES,
-    model_and_diffusion_defaults,
-    create_model_and_diffusion,
+    create_our_film_model_and_diffusion,
+    our_model_and_diffusion_defaults,
+    create_our_model_and_diffusion,
     add_dict_to_argparser,
     args_to_dict,
 )
 from Squidiff.resample import create_named_schedule_sampler
 from sklearn.metrics import r2_score
+from Squidiff.VAE import VAE
 import scipy
 class sampler:
-    def __init__(self,model_path,gene_size,output_dim,use_drug_structure):
-        args = self.parse_args(model_path,gene_size,output_dim,use_drug_structure)
+    def __init__(self, model_path = None, perturb_len = None, batch_len = None, cell_line_len = None, gene_size = None, diffusion_steps = None, use_vae = False, film = False, use_ddim = False, subsection_name = None):
         print("load model and diffusion...")
-
-        model, diffusion = create_model_and_diffusion(
-                **args_to_dict(args, model_and_diffusion_defaults().keys())
+        if use_vae:
+            autoencoder = VAE(
+                num_genes=2000,
+                device='cuda',
+                seed=0,
+                loss_ae='mse',
+                hidden_dim=128,
+                decoder_activation='ReLU',
             )
+            import torch
+            vae_path = f"/work/home/cryoem666/xyf/temp/pycharm/scDiffusion/output/checkpoint/AE/my_VAE_{subsection_name}/model_seed=0_step=199999.pt"
+            #vae_path = "/work/home/cryoem666/xyf/temp/pycharm/scDiffusion/output/checkpoint/AE/my_VAE/model_seed=0_step=199999.pt"
+            autoencoder.load_state_dict(torch.load(vae_path))
+            autoencoder.eval()
+            self.autoencoder = autoencoder
+        else:
+            self.autoencoder = None
+        args = self.parse_args(model_path, perturb_len, batch_len, cell_line_len, gene_size, diffusion_steps, use_vae, film, use_ddim)
+        print(args)
+        if args['film']:
+            model, diffusion = create_our_film_model_and_diffusion(
+                **args_to_dict(args, our_model_and_diffusion_defaults().keys())
+            )
+        else:
+            model, diffusion = create_our_model_and_diffusion(
+                    **args_to_dict(args, our_model_and_diffusion_defaults().keys())
+                )
 
         model.load_state_dict(
             dist_util.load_state_dict(args['model_path'])
@@ -71,11 +97,11 @@ class sampler:
         'T': T,
     }
 
-    def parse_args(self,model_path,gene_size,output_dim,use_drug_structure):
+    def parse_args(self,model_path, perturb_len, batch_len, cell_line_len, gene_size, diffusion_steps, use_vae, film, use_ddim):
         """Parse command-line arguments and update with default values."""
         # Define default arguments
         default_args = {}
-        default_args.update(model_and_diffusion_defaults())
+        default_args.update(our_model_and_diffusion_defaults())
         updated_args = {
             'data_path': '',
             'schedule_sampler': 'uniform',
@@ -90,18 +116,25 @@ class sampler:
             'resume_checkpoint': '',
             'use_fp16': False,
             'fp16_scale_growth': 1e-3,
+            'state_dataset_config': {
+            'perturb_len': perturb_len,
+            'batch_len': batch_len,
+            'cell_line_len': cell_line_len,
             'gene_size': gene_size,
-            'output_dim': output_dim,
+            'output_dim': gene_size,
+            },
+            'output_dim': gene_size,
             'num_layers': 3,
             'class_cond': False,
             'use_encoder': True,
-            'use_ddim':True,
-            'diffusion_steps': 1000,
+            'use_ddim': use_ddim,
+            'diffusion_steps': diffusion_steps,
             'logger_path': '',
             'model_path': model_path,
-            'use_drug_structure':use_drug_structure,
             'comb_num':1,
-            'drug_dimension':1024
+            'drug_dimension':1024,
+            'use_vae': use_vae,
+            'film': film,
         }
         default_args.update(updated_args)
 
@@ -145,17 +178,31 @@ class sampler:
     def sample_around_point(self, point, num_samples=None, scale=0.7):
         return point + scale * np.random.randn(num_samples, point.shape[0])
 
-    def pred(self,z_sem, gene_size):
-        
-        pred_result = self.sample_fn(
-                        self.model,
-                        shape = (z_sem.shape[0], gene_size),
-                        model_kwargs={
-                            'z_mod': z_sem
-                        },
-                        noise =  None
-                )
-        return pred_result
+    def pred(self, model_kwargs, gene_size, return_latent = False):
+        if 'z_mod' in model_kwargs:
+            pred_result = self.sample_fn(
+                            self.model,
+                            shape = (model_kwargs['z_mod']['gamma'].shape[0], gene_size),
+                            model_kwargs=model_kwargs,
+                            noise =  None
+                    )
+        elif 'perturb' in model_kwargs:
+            pred_result = self.sample_fn(
+                            self.model,
+                            shape = (model_kwargs['perturb'].shape[0],gene_size),
+                            model_kwargs=model_kwargs,
+                            noise =  None
+                    )
+        if self.autoencoder:
+            with torch.no_grad():
+                pred_result_new = self.autoencoder(pred_result, return_decoded=True).detach().cpu().numpy()
+        if return_latent:
+            if self.autoencoder:
+                return pred_result.detach().cpu().numpy(), pred_result_new
+            else:
+                return pred_result.detach().cpu().numpy(), None
+        else:
+            return None, pred_result_new
     
     def interp_with_direction(self, z_sem_origin = None, gene_size = None, direction = None, scale = 1, add_noise_term = True):
 
@@ -173,6 +220,9 @@ class sampler:
                             },
                             noise =  None
         )
+        if self.autoencoder:
+            with torch.no_grad():
+                sample_interp = self.autoencoder(sample_interp, return_decoded=True).detach().cpu().numpy()
         return sample_interp
         
     def cal_metric(self,x1,x2):
@@ -183,3 +233,4 @@ class sampler:
         return r2, pearsonr
 
         
+

@@ -13,17 +13,19 @@ import argparse
 from datetime import datetime
 from Squidiff import dist_util,logger
 
-from Squidiff.scrna_datasets import prepared_data
+from Squidiff.scrna_datasets import prepared_state_data
 from Squidiff.resample import create_named_schedule_sampler
 from Squidiff.script_util import (
+    our_model_and_diffusion_defaults,
     model_and_diffusion_defaults,
-    create_model_and_diffusion,
+    create_our_film_model_and_diffusion,
+    create_our_model_and_diffusion,
     args_to_dict,
     add_dict_to_argparser,
 )
 from Squidiff.train_util import TrainLoop,plot_loss
 
-GPUS_PER_NODE = 1  # Set this to the actual number of GPUs per node
+GPUS_PER_NODE = 4  # Set this to the actual number of GPUs per node
 
 def load_state_dict(path, **kwargs):
     """
@@ -52,21 +54,31 @@ def load_state_dict(path, **kwargs):
 def run_training(args):
     dist_util.setup_dist()
     logger.configure(dir=args['logger_path'])
-    logger.log("*********creating model and diffusion**********")
-    model, diffusion = create_model_and_diffusion(
-        **args_to_dict(args, model_and_diffusion_defaults().keys())
+    logger.log("creating data loader...")
+    data, state_config = prepared_state_data(
+        toml_config = args['toml_config'],
+        batch_size = args['batch_size'],
+        model_path = args['resume_checkpoint'],
+        use_hvg = args['use_hvg'],
+        use_vae = args['use_vae'],
+        use_control_set = args['use_control_set'],
+        control_label = args['control_label'],
+        control_k = args['control_k'],
     )
+    args['state_dataset_config'] = state_config
+    logger.log("*********creating model and diffusion**********")
+    if args['film']:
+        model, diffusion = create_our_film_model_and_diffusion(
+            **args_to_dict(args, our_model_and_diffusion_defaults().keys())
+        )
+    else:
+        model, diffusion = create_our_model_and_diffusion(
+            **args_to_dict(args, our_model_and_diffusion_defaults().keys())
+        )
     
     model.to(dist_util.dev())
     schedule_sampler = create_named_schedule_sampler(args['schedule_sampler'], diffusion)
 
-    logger.log("creating data loader...")
-    data = prepared_data(
-        data_dir = args['data_path'],
-        batch_size = args['batch_size'],
-        use_drug_structure= args['use_drug_structure'],
-        comb_num = args['comb_num']
-    )
     #logger.log(f'with gpu {dist_util.dev()}')
     start_time = datetime.now()
     logger.log(f'**********training started at {start_time} **********')
@@ -86,8 +98,9 @@ def run_training(args):
         schedule_sampler=schedule_sampler,
         weight_decay=args['weight_decay'],
         lr_anneal_steps=args['lr_anneal_steps'],
-        use_drug_structure= args['use_drug_structure'],
-        comb_num=args['comb_num']
+        use_drug_structure= False,
+        state_dataset=True,
+        comb_num=1
     )
     train_.run_loop()
     
@@ -104,10 +117,13 @@ def parse_args():
     """Parse command-line arguments and update with default values."""
     # Define default arguments
     default_args = {}
-    default_args.update(model_and_diffusion_defaults())
+    default_args.update(our_model_and_diffusion_defaults())
     updated_args = {
-        'data_path': '',
+        'toml_config': '',
         'schedule_sampler': 'uniform',
+        'num_channels': 128,
+        'dropout': 0.0,
+        'use_checkpoint': False,
         'lr': 1e-4,
         'weight_decay': 0.0,
         'lr_anneal_steps': 1e5,
@@ -119,16 +135,18 @@ def parse_args():
         'resume_checkpoint': '',
         'use_fp16': False,
         'fp16_scale_growth': 1e-3,
-        'gene_size': 100,
         'output_dim': 100,
         'num_layers': 3,
         'class_cond': False,
-        'use_encoder': True,
         'diffusion_steps': 1000,
         'logger_path': '',
-        'use_drug_structure':False,
-        'comb_num':1,
-        
+        'use_hvg': True,
+        'use_encoder': True,
+        'use_vae': False,
+        'film': False,
+        'use_control_set': False,
+        'control_label':"non-targeting",
+        'control_k':32,
     }
     default_args.update(updated_args)
     # Initialize argument parser
@@ -150,8 +168,8 @@ def parse_args():
         raise ValueError("Logger path is required. Please specify the logger path.")
 
             # Check if 'logger_path' is None and raise an error if so
-    if updated_args['data_path']=='':
-        logger.log("ERROR:Please specify the data path --data_path.")
+    if updated_args['toml_config']=='':
+        logger.log("ERROR:Please specify the toml config path --toml_config.")
         raise ValueError("Dataset path is required. Please specify the path where the training adata is.")
 
 

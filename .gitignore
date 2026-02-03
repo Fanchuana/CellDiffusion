@@ -1,0 +1,75 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Data and logs
+data/
+*.csv
+*.tsv
+*.json
+*.pkl
+*.pickle
+*.h5
+*.hdf5
+*.npy
+*.npz
+
+# Checkpoints and logs
+checkpoints/
+logs/
+Squidiff/checkpoints/
+Squidiff/logs/
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+
+# Large files
+*.zip
+*.tar.gz
+*.rar
+*.7z
+
+# Other
+.DS_Store
+Thumbs.db
+*.log
+debug_merged.csv
+
+# Project specific
+Squidiff.egg-info/
+Squidiff/See
+Squidiff/VAE/  # 除非确定要提交
+Squidiff_reproducibility/
+ablation_study/
+reproduce_results/
+script/
+test_conditional_diffusion*/
+test_hepg2_cfg_new*/
+test_scvi/

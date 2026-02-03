@@ -36,13 +36,13 @@ def setup_dist():
         os.environ["MASTER_ADDR"] = "localhost"
     if "MASTER_PORT" not in os.environ:
         print("Environment variable MASTER_PORT not set. Setting default MASTER_PORT='12355'")
-        os.environ["MASTER_PORT"] = "12355"
-
+        os.environ["MASTER_PORT"] = "12358"
+    '''
     rank = int(os.environ["RANK"])
     world_size = int(os.environ["WORLD_SIZE"])
-
     os.environ["CUDA_VISIBLE_DEVICES"] = f"{rank % GPUS_PER_NODE}"
-
+    '''
+    print(f"Setting CUDA_VISIBLE_DEVICES to {os.environ['CUDA_VISIBLE_DEVICES']}")
     backend = "gloo" if not th.cuda.is_available() else "nccl"
     dist.init_process_group(backend=backend, init_method="env://")
 

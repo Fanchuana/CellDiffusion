@@ -3,6 +3,7 @@ This code is adapted from openai's guided-diffusion models and Konpat's diffae m
 https://github.com/openai/guided-diffusion
 https://github.com/phizaz/diffae
 """
+from ast import mod
 import enum
 import math
 
@@ -224,7 +225,7 @@ class GaussianDiffusion:
         return posterior_mean, posterior_variance, posterior_log_variance_clipped
 
     def p_mean_variance(
-        self, model, x, t, clip_denoised=False, denoised_fn=None, model_kwargs=None
+        self, model, x, t, clip_denoised=False, denoised_fn=None, model_kwargs=None, cfg_scale = None
     ):
         """
         Apply the model to get p(x_{t-1} | x_t), as well as a prediction of
@@ -254,7 +255,15 @@ class GaussianDiffusion:
         #print(x.shape)
         assert t.shape == (B,)
         model_output = model(x, self._scale_timesteps(t), **model_kwargs)
-
+        if cfg_scale is not None:
+            # Perform classifier-free guidance
+            uncond_kwargs = dict(model_kwargs)
+            uncond_kwargs['perturb'] = model.model.encoder.perturb_len * th.ones_like(
+                model_kwargs['perturb']
+            )
+            uncond = model(x, self._scale_timesteps(t), **uncond_kwargs)
+            # Combine the two outputs with the guidance scale
+            model_output = (1 + cfg_scale) * model_output - cfg_scale * uncond
         if self.model_var_type in [ModelVarType.LEARNED, ModelVarType.LEARNED_RANGE]:
             assert model_output.shape == (B, C * 2, *x.shape[2:])
             model_output, model_var_values = th.split(model_output, C, dim=1)
@@ -279,7 +288,7 @@ class GaussianDiffusion:
 
             model_variance = _extract_into_tensor(model_variance, t, x.shape)
             model_log_variance = _extract_into_tensor(model_log_variance, t, x.shape)
-
+        
         def process_xstart(x):
             if denoised_fn is not None:
                 x = denoised_fn(x)
@@ -296,9 +305,12 @@ class GaussianDiffusion:
         #    if self.model_mean_type == ModelMeanType.START_X:
         #pred_xstart = process_xstart(model_output)
         #    else:
+        pred_xstart = self._predict_xstart_from_eps(x_t=x, t=t, eps=model_output)
+        '''
         pred_xstart = process_xstart(
             self._predict_xstart_from_eps(x_t=x, t=t, eps=model_output)
         )
+        '''
         model_mean, _, _ = self.q_posterior_mean_variance(
             x_start=pred_xstart, x_t=x, t=t
         )
@@ -391,6 +403,7 @@ class GaussianDiffusion:
         denoised_fn=None,
         cond_fn=None,
         model_kwargs=None,
+        cfg_scale=None
     ):
         """
         Sample x_{t-1} from the model at the given timestep.
@@ -416,6 +429,7 @@ class GaussianDiffusion:
             clip_denoised=clip_denoised,
             denoised_fn=denoised_fn,
             model_kwargs=model_kwargs,
+            cfg_scale=cfg_scale
         )
         noise = th.randn_like(x)
         nonzero_mask = (
@@ -439,6 +453,7 @@ class GaussianDiffusion:
         model_kwargs=None,
         device=None,
         progress=False,
+        cfg_scale=1
     ):
         """
         Generate samples from the model.
@@ -470,6 +485,7 @@ class GaussianDiffusion:
             model_kwargs=model_kwargs,
             device=device,
             progress=progress,
+            cfg_scale=cfg_scale
         ):
             final = sample
         return final["sample"]
@@ -485,6 +501,7 @@ class GaussianDiffusion:
         model_kwargs=None,
         device=None,
         progress=False,
+        cfg_scale=None
     ):
         """
         Generate samples from the model and yield intermediate samples from
@@ -520,6 +537,7 @@ class GaussianDiffusion:
                     denoised_fn=denoised_fn,
                     cond_fn=cond_fn,
                     model_kwargs=model_kwargs,
+                    cfg_scale=cfg_scale
                 )
                 yield out
                 img = out["sample"]
@@ -534,6 +552,7 @@ class GaussianDiffusion:
         cond_fn=None,
         model_kwargs=None,
         eta=0.0,
+        cfg_scale=None
     ):
         """
         Sample x_{t-1} from the model using DDIM.
@@ -548,6 +567,7 @@ class GaussianDiffusion:
             clip_denoised=clip_denoised,
             denoised_fn=denoised_fn,
             model_kwargs=model_kwargs,
+            cfg_scale=cfg_scale
         )
         if cond_fn is not None:
             out = self.condition_score(cond_fn, out, x, t, model_kwargs=model_kwargs)
@@ -584,6 +604,7 @@ class GaussianDiffusion:
         denoised_fn=None,
         model_kwargs=None,
         eta=0.0,
+        cfg_scale=None
     ):
         """
         Sample x_{t+1} from the model using DDIM reverse ODE.
@@ -596,6 +617,7 @@ class GaussianDiffusion:
             clip_denoised=clip_denoised,
             denoised_fn=denoised_fn,
             model_kwargs=model_kwargs,
+            cfg_scale=cfg_scale
         )
         # Usually our model outputs epsilon, but we re-derive it
         # in case we used x_start or x_prev prediction.
@@ -625,6 +647,7 @@ class GaussianDiffusion:
         device=None,
         progress=False,
         eta=0.0,
+        cfg_scale=1.0
     ):
         """
         Generate samples from the model using DDIM.
@@ -643,6 +666,7 @@ class GaussianDiffusion:
             device=device,
             progress=progress,
             eta=eta,
+            cfg_scale=cfg_scale
         ):
             final = sample
         return final["sample"]
@@ -659,6 +683,7 @@ class GaussianDiffusion:
         device=None,
         progress=False,
         eta=0.0,
+        cfg_scale=None
     ):
         """
         Use DDIM to sample from the model and yield intermediate samples from
@@ -693,6 +718,7 @@ class GaussianDiffusion:
                     cond_fn=cond_fn,
                     model_kwargs=model_kwargs,
                     eta=eta,
+                    cfg_scale=cfg_scale
                 )
                 yield out
                 img = out["sample"]
@@ -811,7 +837,18 @@ The resulting units are bits (rather than nats, as one might expect).
 
         
         return terms
-
+    
+    '''
+    解析:这里包括了四个模式，总体来说，可以分成两类：计算elbo/计算mse.
+    由于elbo由两部分组成，一部分是reconstruction，一部分是每一步的kl。但这里我们是每次只采样出一个时间t来计算loss的。
+    所以没有整个markov chain的elbo，只能计算每一步的elbo。
+    1. LossType.KL: 计算每一步的elbo，作为loss. 两种情况，要么算kl，要么算decoder nll，也就是reconstruction loss.
+    2. LossType.RESCALED_KL: 计算每一步的kl，然后乘以num_timesteps，作为loss.
+    3. LossType.MSE: 计算mse，作为loss.
+    4. LossType.RESCALED_MSE: mlp的输出包括mean和variance两部分，mean部分计算mse，variance部分计算elbo中的kl或者decoder nll项，然后把两者相加作为loss.
+    但是注意，mse只负责mean的训练，variance的梯度不传递到mean部分。
+    最后返回一个terms字典，包含loss，以及可能的mse和vb项.
+    '''
     def _prior_bpd(self, x_start):
         """
         Get the prior KL term for the variational lower-bound, measured in

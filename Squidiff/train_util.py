@@ -3,9 +3,12 @@ This code is adapted from openai's guided-diffusion models and Konpat's diffae m
 https://github.com/openai/guided-diffusion
 https://github.com/phizaz/diffae
 """
+from ast import Not
 import copy
 import functools
 import os
+from random import sample
+from re import X
 
 import torch as th
 import torch.distributed as dist
@@ -67,12 +70,15 @@ class TrainLoop:
         weight_decay=0.0,
         lr_anneal_steps=0,
         use_drug_structure=False,
-        comb_num=1
+        state_dataset=False,
+        comb_num=1,
+        p_drop_perturb = 0.15
     ):
         
         self.model = model
         self.diffusion = diffusion
         self.use_drug_structure = use_drug_structure
+        self.is_state_dataset = state_dataset
         self.data = data
         self.batch_size = batch_size
         self.microbatch = microbatch if microbatch > 0 else batch_size
@@ -94,7 +100,7 @@ class TrainLoop:
         self.step = 0
         self.resume_step = 0
         self.global_batch = self.batch_size #* dist.get_world_size()
-
+        self.p_drop_perturb = 0.15
         self.sync_cuda = th.cuda.is_available()
         self.loss_list = []
         #self._load_and_sync_parameters()
@@ -199,9 +205,9 @@ class TrainLoop:
             
             if self.step % self.log_interval == 0:
                 logger.dumpkvs()
-            
             if self.step % self.save_interval == 0:
                 self.save()
+                self.eval_batch(batch)
                 # Run for a finite amount of time in integration tests.
                 if os.environ.get("DIFFUSION_TRAINING_TEST", "") and self.step > 0:
                     return
@@ -209,6 +215,57 @@ class TrainLoop:
         # Save the last checkpoint if it wasn't already saved.
         if (self.step - 1) % self.save_interval != 0:
             self.save()
+        
+    def eval_batch(self, batch):
+        self.model.eval()
+        with th.no_grad():
+            sample_fn = self.diffusion.p_sample_loop
+            micro = batch['feature'][0 : self.microbatch].to(dist_util.dev())
+            if self.is_state_dataset:
+                micro_cond = {
+                    'perturb': batch['perturb'][0 : 0 + self.microbatch].to(dist_util.dev()),
+                    'batch': batch['batch'][0 : 0 + self.microbatch].to(dist_util.dev()),
+                    'cell_line': batch['cell_line'][0 : 0 + self.microbatch].to(dist_util.dev()),
+                    'control_set': batch['control_set'][0: 0 + self.microbatch].to(dist_util.dev()) if 'control_set' in batch else None,
+                }
+            else:
+                raise NotImplementedError("Only state dataset evaluation is implemented.")
+            if self.p_drop_perturb > 0.0:
+                pred_result = sample_fn(
+                    self.model,
+                    shape = (micro.shape),
+                    model_kwargs=micro_cond,
+                    noise = None
+                )
+            '''
+            z_sem = self.model.encoder(
+                x_start = micro,
+                perturb_label = micro_cond['perturb'],
+                batch = micro_cond['batch'],
+                cell_type = micro_cond['cell_line']
+            )
+            pred_result = sample_fn(
+                self.model,
+                shape = (micro.shape),
+                model_kwargs={
+                    'z_mod': z_sem,
+                    'control_set': micro_cond.get('control_set', None),
+                },
+                noise =  None
+        )
+        '''
+        x, y = micro.detach().cpu().numpy(), pred_result.detach().cpu().numpy()
+        # 观察一下 x 和 y 的 min/max
+        print(f"X range: {x.min()} to {x.max()}")
+        print(f"Y range: {y.min()} to {y.max()}")
+        from sklearn.metrics import r2_score 
+        from scipy.stats import pearsonr
+        r2, pearson_r = r2_score(x.mean(axis=0), y.mean(axis=0)), pearsonr(x.mean(axis=0), y.mean(axis=0))[0]
+        mmd = self.mmd_loss(x, y).item()
+        logger.log(f'Evaluation MMD Loss: {mmd}')
+        logger.log(f'Evaluation results -- R2: {r2}, Pearson R: {pearson_r}')
+
+        self.model.train()
 
     def run_step(self, batch):
         self.forward_backward(batch)
@@ -224,18 +281,18 @@ class TrainLoop:
         for i in range(0, batch['feature'].shape[0], self.microbatch):
             
             micro = batch['feature'][i : i + self.microbatch].to(dist_util.dev())
-            if self.use_drug_structure:
+            if self.is_state_dataset:
+                drop_mask = (th.rand(self.microbatch, device=dist_util.dev()) < self.p_drop_perturb)
                 micro_cond = {
-                    'group': batch['group'][i : i + self.microbatch],
-                    'drug_dose': batch['drug_dose'][i : i + self.microbatch].to(dist_util.dev()),
-                    'control_feature':batch['control_feature'].to(dist_util.dev()),
+                    'perturb': batch['perturb'][i : i + self.microbatch].to(dist_util.dev()),
+                    'batch': batch['batch'][i : i + self.microbatch].to(dist_util.dev()),
+                    'cell_line': batch['cell_line'][i : i + self.microbatch].to(dist_util.dev()),
+                    'control_set': batch['control_set'][i: i + self.microbatch].to(dist_util.dev()) if 'control_set' in batch else None,
                 }
+                micro_cond['perturb'][drop_mask] = self.model.encoder.perturb_len
+
             else:
-                micro_cond = {
-                    'group': batch['group'][i : i + self.microbatch],
-                    'drug_dose':None,
-                    'control_feature':None
-                }
+                raise NotImplementedError("Only state dataset is implemented.")
             
             last_batch = (i + self.microbatch) >= batch['feature'].shape[0]
             t, weights = self.schedule_sampler.sample(micro.shape[0], dist_util.dev())
@@ -316,6 +373,56 @@ class TrainLoop:
 
         if dist.is_available() and dist.is_initialized():
             dist.barrier()
+
+    def mmd_loss(self, source, target, kernel_mul=2.0, kernel_num=5, fix_sigma=None):
+        """
+        计算源域数据和目标域数据之间的 MMD Loss (基于高斯核)。
+        
+        参数:
+            source: 源域数据，形状为 (n, d)
+            target: 目标域数据，形状为 (m, d)
+            kernel_mul: 计算每个高斯核带宽时的乘数
+            kernel_num: 高斯核的数量
+            fix_sigma: 是否固定 sigma，如果为 None 则根据数据动态计算
+        
+        返回:
+            loss: MMD loss 值
+        """
+        import torch
+        source, target = torch.tensor(source), torch.tensor(target)
+        n = source.size(0)
+        m = target.size(0)
+        
+        # 拼接数据以统一计算核矩阵
+        total = torch.cat([source, target], dim=0)
+        total0 = total.unsqueeze(0).expand(int(total.size(0)), int(total.size(0)), int(total.size(1)))
+        total1 = total.unsqueeze(1).expand(int(total.size(0)), int(total.size(0)), int(total.size(1)))
+        
+        # 计算 L2 距离矩阵
+        L2_distance = ((total0 - total1) ** 2).sum(2)
+        
+        # 计算带宽 (bandwidth)
+        if fix_sigma:
+            bandwidth = fix_sigma
+        else:
+            bandwidth = torch.sum(L2_distance.data) / (n + m)**2
+            
+        bandwidth /= kernel_mul ** (kernel_num // 2)
+        bandwidth_list = [bandwidth * (kernel_mul**i) for i in range(kernel_num)]
+        
+        # 计算多核高斯核矩阵
+        kernel_val = [torch.exp(-L2_distance / bandwidth_temp) for bandwidth_temp in bandwidth_list]
+        kernels = sum(kernel_val)
+        
+        # 根据 MMD 公式组合核矩阵部分
+        XX = kernels[:n, :n]
+        YY = kernels[n:, n:]
+        XY = kernels[:n, n:]
+        YX = kernels[n:, :n]
+        
+        loss = torch.mean(XX) + torch.mean(YY) - torch.mean(XY) - torch.mean(YX)
+        return loss
+
 
 def parse_resume_step_from_filename(filename):
     """

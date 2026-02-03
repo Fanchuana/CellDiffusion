@@ -28,3 +28,6 @@ spam-gui = "spam:main_gui"
 
 [project.entry-points."spam.magical"]
 tomatoes = "spam:main_tomatoes"
+
+[tool.setuptools]
+packages = ["Squidiff"]
