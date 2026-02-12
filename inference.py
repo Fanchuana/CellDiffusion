@@ -14,11 +14,11 @@ fold2name = {
     3: 'k562',
     4: 'rpe1'
 }
-def inference_result(input_dir: str, output_dir: str, fold: int, film: bool = False, use_ddim: bool = True, use_control_set: bool = False, control_label: str = 'non-targeting', control_k: int = 8):
+def inference_result(input_dir: str, output_dir: str, fold: int, film: bool = False, use_ddim: bool = True, use_control_set: bool = False, control_label: str = 'non-targeting', control_k: int = 8, task: str = 'fewshot'):
     input_dir, output_dir = input_dir.rstrip('/'), output_dir.rstrip('/')
     file = pickle.load(open(f"{input_dir}/vocab_state.pkl","rb"))
-    config = toml.load(f"/work/home/cryoem666/xyf/temp/pycharm/Squidiff/data/replogle/{fold2name[fold]}.toml")
-    state_Data = ad.read_h5ad(config['datasets']['replogle_proper'])
+    config = toml.load(f"/mnt/shared-storage-user/lvying/s2-project/virtual_cell/state/state_preprint_toml_files/replogle_tomls/{fold2name[fold]}_{task}.toml")
+    state_Data = ad.read_h5ad(config['datasets']['replogle'])
     differ_gene = list(set(state_Data.obs['gene'])-set(file['perturb']))
     for i, gene in enumerate(differ_gene):
         file['perturb'][gene] = file['perturb']['non-targeting']
@@ -34,20 +34,22 @@ def inference_result(input_dir: str, output_dir: str, fold: int, film: bool = Fa
             use_vae=True,
             film = film,
             use_ddim = use_ddim,
-            subsection_name=fold2name[fold]
+            subsection_name=fold2name[fold],
+            task = task
         )
+    print(sampler)
     state_Data.obs['perturb_label'] = state_Data.obs['gene'].apply(lambda x: file['perturb'][x])
     state_Data.obs['batch_label'] = state_Data.obs['gem_group'].apply(lambda x: file['batch'][x])
     state_Data.obs['cell_line_label'] = state_Data.obs['cell_line'].apply(lambda x: file['cell_line'][x])
-    hepg2_real = ad.read_h5ad(f'/work/home/cryoem666/xyf/temp/pycharm/state-reproduce/baselines/baseline_output/cpa_replogle_v2/fold{fold}/adata_real.h5ad')
-    hepg2_real.obs['perturb_label'] = hepg2_real.obs['pert_name'].apply(lambda x: file['perturb'][x])
-    hepg2_real.obs['cell_line_label'] = hepg2_real.obs['celltype_name'].apply(lambda x: file['cell_line'][x])
+    hepg2_real = ad.read_h5ad(f'/mnt/shared-storage-user/lvying/s2-project/huggingface/ST-HVG-Replogle-copied/{task}/{fold2name[fold]}/eval_best.ckpt/adata_real.h5ad')
+    hepg2_real.obs['perturb_label'] = hepg2_real.obs['gene'].apply(lambda x: file['perturb'][x])
+    hepg2_real.obs['cell_line_label'] = hepg2_real.obs['cell_line'].apply(lambda x: file['cell_line'][x])
     hepg2_real.obsm['X_squidiff_ours'] = np.zeros_like(hepg2_real.X)
     state_control = state_Data[(state_Data.obs['gene']==control_label)&(state_Data.obs['cell_line']==fold2name[fold])][:, state_Data.var['highly_variable']].copy()
     state_control.obsm['VAE_latent'] = sampler.autoencoder(torch.tensor(state_control.X).float().to('cuda'), return_latent=True).cpu().detach().numpy()
     control_set = state_control.obsm['VAE_latent']
-    for gene in tqdm(hepg2_real.obs['pert_name'].unique()):
-        mask = (hepg2_real.obs['pert_name'].values == gene)
+    for gene in tqdm(hepg2_real.obs['gene'].unique()):
+        mask = (hepg2_real.obs['gene'].values == gene)
         n = int(mask.sum())
         if n == 0:
             continue
@@ -131,13 +133,14 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument('--input_dir', type=str, required=True, help='Input directory containing model and vocab_state.pkl')
-    parser.add_argument('--output_dir', type=str, required=False, default="/work/home/cryoem666/xyf/temp/pycharm/Squidiff/test_conditional_diffusion_result/" ,help='Output directory to save results')
+    parser.add_argument('--output_dir', type=str, required=False, default="/mnt/shared-storage-user/lvying/s2-project/virtual_cell/CellDiffusion/test_conditional_diffusion_result/" ,help='Output directory to save results')
     parser.add_argument('--fold', type=int, required=True, help='Fold number (0-3)')
     parser.add_argument('--film', type=bool, required=False, default=False, help='Whether to use FiLM model')
     parser.add_argument('--use_ddim_reverse', type=bool, required=False, default=False, help='Whether to use DDIM sampling')
     parser.add_argument('--use_control_set', type=bool, required=False, default=False, help='Whether to use control set during inference')
     parser.add_argument('--control_label', type=str, required=False, default='non-targeting', help='Control label name')
     parser.add_argument('--control_k', type=int, required=False, default=32, help='Number of control samples to use per cell')
+    parser.add_argument('--task', type=str, required=False, default='fewshot', help='Task type: fewshot or zeroshot')
     args = parser.parse_args()
     args.use_ddim = 1 - args.use_ddim_reverse
-    inference_result(args.input_dir, args.output_dir, args.fold, args.film, args.use_ddim, args.use_control_set, args.control_label, args.control_k)
+    inference_result(args.input_dir, args.output_dir, args.fold, args.film, args.use_ddim, args.use_control_set, args.control_label, args.control_k, args.task)

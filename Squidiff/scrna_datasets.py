@@ -161,14 +161,24 @@ def prepared_state_data(toml_config, batch_size, model_path, use_hvg = True, use
     config = toml.load(toml_config)
     dataset_name, dataset_path = tuple(config['datasets'].items())[0]
     total_adata = sc.read_h5ad(dataset_path)
-    test_celltype = tuple(config['fewshot'].keys())[0].split('.')[1]
-    test_perturb_list, val_perturb_list = tuple(config['fewshot'].values())[0]['test'], tuple(config['fewshot'].values())[0]['val']
-    # 去掉cell type为test cell type 且 perturb在gene list中的细胞
-    train_adata = total_adata[~((total_adata.obs['cell_line']==test_celltype) & (total_adata.obs['gene'].isin(test_perturb_list+val_perturb_list)))]
-    #train_adata = train_adata[train_adata.obs['cell_line']=='k562']
-    test_adata, val_adata = total_adata[(total_adata.obs['cell_line']==test_celltype) & (total_adata.obs['gene'].isin(test_perturb_list))], total_adata[(total_adata.obs['cell_line']==test_celltype) & (total_adata.obs['gene'].isin(val_perturb_list))]
-    print(f"Train adata shape: {train_adata.shape}, Test adata shape: {test_adata.shape}, Val adata shape: {val_adata.shape}")
-    # Return basic info of the dataset 
+    if 'fewshot' in dataset_path:
+        task = 'fewshot'
+        test_celltype = tuple(config['fewshot'].keys())[0].split('.')[1]
+        test_valid = list(config['fewshot'].values())[0]
+        test_perturb_list, val_perturb_list = test_valid['test'] if 'test' in test_valid else [], test_valid['val'] if 'val' in test_valid else []
+        # 去掉cell type为test cell type 且 perturb在gene list中的细胞
+        train_adata = total_adata[~((total_adata.obs['cell_line']==test_celltype) & (total_adata.obs['gene'].isin(test_perturb_list+val_perturb_list)))]
+        #train_adata = train_adata[train_adata.obs['cell_line']=='k562']
+        test_adata, val_adata = total_adata[(total_adata.obs['cell_line']==test_celltype) & (total_adata.obs['gene'].isin(test_perturb_list))], total_adata[(total_adata.obs['cell_line']==test_celltype) & (total_adata.obs['gene'].isin(val_perturb_list))]
+        print(f"Train adata shape: {train_adata.shape}, Test adata shape: {test_adata.shape}, Val adata shape: {val_adata.shape} for fewshot setting.")
+        # Return basic info of the dataset 
+    else:
+        task = 'zeroshot'
+        test_celltype = tuple(config['zeroshot'].keys())[0].split('.')[1]
+        # 去掉cell type除non-targeting 以外的perturbation
+        train_adata = total_adata[~((total_adata.obs['cell_line']==test_celltype) & (total_adata.obs['gene']!=control_label))]
+        test_adata = total_adata[(total_adata.obs['cell_line']==test_celltype) & (total_adata.obs['gene']!=control_label)]
+        print(f"Train adata shape: {train_adata.shape}, Test adata shape: {test_adata.shape} for zeroshot setting.")
     perturb_len, batch_len, cell_line_len, gene_size = len(total_adata.obs['gene'].unique()), len(total_adata.obs['gem_group'].unique()), len(total_adata.obs['cell_line'].unique()), len(total_adata.var_names) if not use_hvg else sum(total_adata.var['highly_variable'])
     print(f"Perturbation types: {perturb_len}, Batch types: {batch_len}, Cell types: {cell_line_len}, Gene size: {gene_size}")
     if use_hvg: 
@@ -185,8 +195,8 @@ def prepared_state_data(toml_config, batch_size, model_path, use_hvg = True, use
             hidden_dim=128,
             decoder_activation='ReLU',
         )
-        subsection_name = tuple(config['fewshot'].keys())[0].split('.')[1]
-        vae_path = f"/work/home/cryoem666/xyf/temp/pycharm/scDiffusion/output/checkpoint/AE/my_VAE_{subsection_name}/model_seed=0_step=199999.pt"
+        subsection_name = tuple(config[task].keys())[0].split('.')[1]
+        vae_path = f"/mnt/shared-storage-user/lvying/s2-project/virtual_cell/scDiffusion_revised/output/checkpoint/AE/state_{task}_VAE_{subsection_name}/model_seed=0_step=199999.pt"
         #vae_path = "/work/home/cryoem666/xyf/temp/pycharm/scDiffusion/output/checkpoint/AE/my_VAE/model_seed=0_step=199999.pt"
         autoencoder.load_state_dict(torch.load(vae_path))
         autoencoder.eval()

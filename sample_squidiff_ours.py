@@ -25,7 +25,7 @@ from sklearn.metrics import r2_score
 from Squidiff.VAE import VAE
 import scipy
 class sampler:
-    def __init__(self, model_path = None, perturb_len = None, batch_len = None, cell_line_len = None, gene_size = None, diffusion_steps = None, use_vae = False, film = False, use_ddim = False, subsection_name = None):
+    def __init__(self, model_path = None, perturb_len = None, batch_len = None, cell_line_len = None, gene_size = None, diffusion_steps = None, use_vae = False, film = False, use_ddim = False, subsection_name = None, task = 'fewshot'):
         print("load model and diffusion...")
         if use_vae:
             autoencoder = VAE(
@@ -37,7 +37,7 @@ class sampler:
                 decoder_activation='ReLU',
             )
             import torch
-            vae_path = f"/work/home/cryoem666/xyf/temp/pycharm/scDiffusion/output/checkpoint/AE/my_VAE_{subsection_name}/model_seed=0_step=199999.pt"
+            vae_path = f"/mnt/shared-storage-user/lvying/s2-project/virtual_cell/scDiffusion_revised/output/checkpoint/AE/state_{task}_VAE_{subsection_name}/model_seed=0_step=199999.pt"
             #vae_path = "/work/home/cryoem666/xyf/temp/pycharm/scDiffusion/output/checkpoint/AE/my_VAE/model_seed=0_step=199999.pt"
             autoencoder.load_state_dict(torch.load(vae_path))
             autoencoder.eval()
@@ -66,6 +66,7 @@ class sampler:
         self.arg = args
         self.diffusion = diffusion
         self.sample_fn = (diffusion.p_sample_loop if not args['use_ddim'] else diffusion.ddim_sample_loop)
+        print("model and diffusion loaded.")
     
     def stochastic_encode(
         self, model, x, t, model_kwargs):

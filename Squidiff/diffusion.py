@@ -453,7 +453,7 @@ class GaussianDiffusion:
         model_kwargs=None,
         device=None,
         progress=False,
-        cfg_scale=1
+        cfg_scale=1.0
     ):
         """
         Generate samples from the model.
@@ -647,7 +647,7 @@ class GaussianDiffusion:
         device=None,
         progress=False,
         eta=0.0,
-        cfg_scale=1.0
+        cfg_scale=4.0
     ):
         """
         Generate samples from the model using DDIM.
@@ -698,6 +698,7 @@ class GaussianDiffusion:
             img = noise
         else:
             img = th.randn(*shape, device=device)
+        import numpy as np 
         indices = list(range(self.num_timesteps))[::-1]
 
         if progress:
